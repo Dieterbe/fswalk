@@ -2,17 +2,12 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package fs
+package fswalk
 
 import (
-	"errors"
+	"io/fs"
 	"path"
 )
-
-// SkipDir is used as a return value from WalkDirFuncs to indicate that
-// the directory named in the call is to be skipped. It is not returned
-// as an error by any function.
-var SkipDir = errors.New("skip this directory")
 
 // WalkDirFunc is the type of the function called by WalkDir to visit
 // each file or directory.
@@ -25,7 +20,7 @@ var SkipDir = errors.New("skip this directory")
 // The d argument is the fs.DirEntry for the named path.
 //
 // The error result returned by the function controls how WalkDir
-// continues. If the function returns the special value SkipDir, WalkDir
+// continues. If the function returns the special value fs.SkipDir, WalkDir
 // skips the current directory (path if d.IsDir() is true, otherwise
 // path's parent directory). Otherwise, if the function returns a non-nil
 // error, WalkDir stops entirely and returns that error.
@@ -47,31 +42,33 @@ var SkipDir = errors.New("skip this directory")
 // ReadDir. In this second case, the function is called twice with the
 // path of the directory: the first call is before the directory read is
 // attempted and has err set to nil, giving the function a chance to
-// return SkipDir and avoid the ReadDir entirely. The second call is
+// return fs.SkipDir and avoid the ReadDir entirely. The second call is
 // after a failed ReadDir and reports the error from ReadDir.
 // (If ReadDir succeeds, there is no second call.)
 //
 // The differences between WalkDirFunc compared to filepath.WalkFunc are:
 //
 //   - The second argument has type fs.DirEntry instead of fs.FileInfo.
-//   - The function is called before reading a directory, to allow SkipDir
-//     to bypass the directory read entirely.
+//   - The function is called before reading a directory, to allow
+//     fs.SkipDir to bypass the directory read entirely.
 //   - If a directory read fails, the function is called a second time
 //     for that directory to report the error.
 //
-type WalkDirFunc func(path string, d DirEntry, err error) error
+type WalkDirFunc func(path string, d fs.DirEntry, err error) error
 
-// walkDir recursively descends path, calling walkDirFn.
-func walkDir(fsys FS, name string, d DirEntry, walkDirFn WalkDirFunc) error {
+type DoneDirFunc func(path string, d fs.DirEntry)
+
+// walkDir recursively descends path, calling walkDirFn and doneDirFn
+func walkDir(fsys fs.FS, name string, d fs.DirEntry, walkDirFn WalkDirFunc, doneDirFn DoneDirFunc) error {
 	if err := walkDirFn(name, d, nil); err != nil || !d.IsDir() {
-		if err == SkipDir && d.IsDir() {
+		if err == fs.SkipDir && d.IsDir() {
 			// Successfully skipped directory.
 			err = nil
 		}
 		return err
 	}
 
-	dirs, err := ReadDir(fsys, name)
+	dirs, err := fs.ReadDir(fsys, name)
 	if err != nil {
 		// Second call, to report ReadDir error.
 		err = walkDirFn(name, d, err)
@@ -82,21 +79,26 @@ func walkDir(fsys FS, name string, d DirEntry, walkDirFn WalkDirFunc) error {
 
 	for _, d1 := range dirs {
 		name1 := path.Join(name, d1.Name())
-		if err := walkDir(fsys, name1, d1, walkDirFn); err != nil {
-			if err == SkipDir {
-				break
+		if err := walkDir(fsys, name1, d1, walkDirFn, doneDirFn); err != nil {
+			if err == fs.SkipDir {
+				return nil
 			}
 			return err
 		}
 	}
+
+	doneDirFn(name, d)
+
 	return nil
 }
 
-// WalkDir walks the file tree rooted at root, calling fn for each file or
-// directory in the tree, including root.
+// WalkDir walks the file tree rooted at root, calling walkDirFn for each file or
+// directory in the tree, including root. doneDirFn is called any time a directory
+// has been walked.
 //
-// All errors that arise visiting files and directories are filtered by fn:
-// see the fs.WalkDirFunc documentation for details.
+// All errors that arise visiting files and directories are filtered by
+// walkDirFn:
+// see the fswalk.WalkDirFunc documentation for details.
 //
 // The files are walked in lexical order, which makes the output deterministic
 // but requires WalkDir to read an entire directory into memory before proceeding
@@ -104,24 +106,24 @@ func walkDir(fsys FS, name string, d DirEntry, walkDirFn WalkDirFunc) error {
 //
 // WalkDir does not follow symbolic links found in directories,
 // but if root itself is a symbolic link, its target will be walked.
-func WalkDir(fsys FS, root string, fn WalkDirFunc) error {
-	info, err := Stat(fsys, root)
+func WalkDir(fsys fs.FS, root string, walkDirFn WalkDirFunc, doneDirFn DoneDirFunc) error {
+	info, err := fs.Stat(fsys, root)
 	if err != nil {
-		err = fn(root, nil, err)
+		err = walkDirFn(root, nil, err)
 	} else {
-		err = walkDir(fsys, root, &statDirEntry{info}, fn)
+		err = walkDir(fsys, root, &statDirEntry{info}, walkDirFn, doneDirFn)
 	}
-	if err == SkipDir {
+	if err == fs.SkipDir {
 		return nil
 	}
 	return err
 }
 
 type statDirEntry struct {
-	info FileInfo
+	info fs.FileInfo
 }
 
-func (d *statDirEntry) Name() string            { return d.info.Name() }
-func (d *statDirEntry) IsDir() bool             { return d.info.IsDir() }
-func (d *statDirEntry) Type() FileMode          { return d.info.Mode().Type() }
-func (d *statDirEntry) Info() (FileInfo, error) { return d.info, nil }
+func (d *statDirEntry) Name() string               { return d.info.Name() }
+func (d *statDirEntry) IsDir() bool                { return d.info.IsDir() }
+func (d *statDirEntry) Type() fs.FileMode          { return d.info.Mode().Type() }
+func (d *statDirEntry) Info() (fs.FileInfo, error) { return d.info, nil }
