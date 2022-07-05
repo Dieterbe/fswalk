@@ -56,7 +56,7 @@ import (
 //
 type WalkDirFunc func(path string, d fs.DirEntry, err error) error
 
-type DoneDirFunc func(path string, d fs.DirEntry)
+type DoneDirFunc func(path string, d fs.DirEntry) error
 
 // walkDir recursively descends path, calling walkDirFn and doneDirFn
 func walkDir(fsys fs.FS, name string, d fs.DirEntry, walkDirFn WalkDirFunc, doneDirFn DoneDirFunc) error {
@@ -87,9 +87,7 @@ func walkDir(fsys fs.FS, name string, d fs.DirEntry, walkDirFn WalkDirFunc, done
 		}
 	}
 
-	doneDirFn(name, d)
-
-	return nil
+	return doneDirFn(name, d)
 }
 
 // WalkDir walks the file tree rooted at root, calling walkDirFn for each file or
