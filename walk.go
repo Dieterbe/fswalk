@@ -56,13 +56,14 @@ import (
 //
 type WalkDirFunc func(path string, d fs.DirEntry, err error) error
 
-type DoneDirFunc func(path string, d fs.DirEntry) error
+type DoneDirFunc func(path string, d fs.DirEntry, err error) error
 
 // walkDir recursively descends path, calling walkDirFn and doneDirFn
 func walkDir(fsys fs.FS, name string, d fs.DirEntry, walkDirFn WalkDirFunc, doneDirFn DoneDirFunc) error {
 	if err := walkDirFn(name, d, nil); err != nil || !d.IsDir() {
 		if err == fs.SkipDir && d.IsDir() {
 			// Successfully skipped directory.
+			// Don't call doneDirFn because we didn't even start processing the directory.
 			err = nil
 		}
 		return err
@@ -73,6 +74,9 @@ func walkDir(fsys fs.FS, name string, d fs.DirEntry, walkDirFn WalkDirFunc, done
 		// Second call, to report ReadDir error.
 		err = walkDirFn(name, d, err)
 		if err != nil {
+			if err == fs.SkipDir {
+				return doneDirFn(name, d, err)
+			}
 			return err
 		}
 	}
@@ -81,18 +85,19 @@ func walkDir(fsys fs.FS, name string, d fs.DirEntry, walkDirFn WalkDirFunc, done
 		name1 := path.Join(name, d1.Name())
 		if err := walkDir(fsys, name1, d1, walkDirFn, doneDirFn); err != nil {
 			if err == fs.SkipDir {
-				return nil
+				return doneDirFn(name, d, err)
 			}
 			return err
 		}
 	}
 
-	return doneDirFn(name, d)
+	return doneDirFn(name, d, nil)
 }
 
 // WalkDir walks the file tree rooted at root, calling walkDirFn for each file or
 // directory in the tree, including root. doneDirFn is called any time a directory
-// has been walked.
+// has been walked or walking has been aborted using fs.SkipDir (in which case the error
+// argument is set to that value), not when it was skipped entirely.
 //
 // All errors that arise visiting files and directories are filtered by
 // walkDirFn:
